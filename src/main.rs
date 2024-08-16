@@ -1,37 +1,17 @@
 
-use std::{env, fs, io, path::Path, cmp::Ordering };
-use colored::Colorize;
+use std::{env, fs, io, path::Path, cmp::Ordering, ffi::OsString };
+use colored::{ColoredString, Colorize};
+use ratatui::{
+    backend::CrosstermBackend,
+    crossterm::{terminal::{ disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}, ExecutableCommand},
+    Terminal
+};
 
-struct Test {
-    patch: u8,
-    result: i64,
-    test: String
-}
-impl Test {
-    // assumes retcode exists at <p>/retcode 
-    pub fn new(p: & Path) -> Test {
-       // test name is parent directory of the retcode file
-       let test_name =  String::from(p.file_name().unwrap().to_str().unwrap());
-       // patch number is the parent directory of the test name directory
-       // use 0 if test is not related to a patch
-       let patch_id: u8;
-       match p.parent() {
-        Some(parnt) => {
-            let  num = String::from(parnt.file_name().unwrap().to_str().unwrap());
-            match num.parse::<u8>() {
-                Ok(num) => patch_id = num,
-                Err(_) => patch_id = 0
-            }},
-        None => patch_id = 0
-       };
-       let mut pb = p.to_path_buf(); 
-       pb.push("retcode");
 
-       let str_rc = fs::read_to_string(pb).unwrap();
-       let retcode = str_rc.parse::<i64>().unwrap_or(404);
-       Test {patch: patch_id, result: retcode, test: test_name}
-    }
-}
+mod test;
+use test::Test;
+mod tui;
+use tui::App;
 
 fn parse_results(path: &String, results: &mut Vec<Test>) -> io::Result<usize> {
     let entries = fs::read_dir(path)?
@@ -58,32 +38,63 @@ fn print_results(results: &mut Vec<Test>) {
 
     for t in results.iter() {
         if Some(&t.test) != prev_test {
-            println!("{}:", t.test.bold());
+            println!("{}:", Colorize::bold(t.test.as_str()));
             prev_test = Some(&t.test);
         }
 
-        let res_str;
+        let res_str : ColoredString;
         if t.result != 0 {
-            res_str = t.result.to_string().red();
+            res_str = Colorize::red(t.result.to_string().as_str());
             fail += 1;
         } else {
-            res_str = t.result.to_string().green();
+            res_str = Colorize::green(t.result.to_string().as_str());
             pass += 1;
         }
         println!("\t\t{}\t\t\t{}", t.patch, res_str);
     }
     println!("==============================================");
-    println!("{}: {},\t{}: {},\t{}: {}", "TOTAL".bold(), pass+fail, "PASS".bold().green(), pass, "FAIL".bold().red(), fail);
+    println!("{}: {},\t{}: {},\t{}: {}", Colorize::bold("TOTAL"), pass+fail, Colorize::bold("Pass").green(), pass, Colorize::bold("FAIL").red(), fail);
 
 }
 
+fn tui_results (results: &mut Vec<Test>, p: String) -> io::Result<()> {
+
+    let mut app =  App::from_results(results, &p);
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    let terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+
+    app.run(terminal)?;
+
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+    Ok(())
+}
+
 fn main() {
-    if env::args_os().len() != 2 {
-        println!("USAGE: {} <path to Nipa results>", env::args_os().next().unwrap().into_string().unwrap());
+    let path;
+    let mut tty = true;
+    if env::args_os().len() < 2 || env::args_os().len() > 3 {
+        println!("USAGE: {} [--stdout] <path to Nipa results>", env::args_os().next().unwrap().into_string().unwrap());
         return;
     }
-
-    let path = env::args_os().last().unwrap().into_string().unwrap();
+    else if env::args_os().len() == 2 {
+        path = env::args_os().last().unwrap().into_string().unwrap();
+    }
+    else {
+       path =  env::args_os().into_iter().filter_map(
+        |x| {
+                                if *x == OsString::from("--stdout") {
+                                    tty = false;
+                                    None
+                                }
+                                else {
+                                    Some(x)
+                                }
+        }).collect::<Vec<_>>().last().unwrap().clone().into_string().unwrap();
+    }
+ 
+    //path = env::args_os().last().unwrap().into_string().unwrap();
     let results = &mut Vec::<Test>::new();
     let parse_rc = parse_results(&path, results);
     let total_tests;
@@ -95,5 +106,10 @@ fn main() {
                         }
     };
     println!("found {} total tests...", total_tests);
-    print_results(results);
+    if tty {
+        let _ = tui_results(results, path);
+    }
+    else {
+        print_results(results);
+    }
 }
